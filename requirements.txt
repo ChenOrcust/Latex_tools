@@ -1,0 +1,6 @@
+PyQt6>=6.6
+PyQt6-WebEngine>=6.6
+Pillow>=10.0
+openai>=1.40
+python-dotenv>=1.0
+markdown>=3.6
