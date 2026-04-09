@@ -44,6 +44,7 @@ from .capture import capture_screen_region
 from .env_profile_store import EnvProfileStore
 from .image_utils import save_qimage_to_temp, save_qpixmap_to_temp
 from .markdown_renderer import build_markdown_html, wrap_formula_as_markdown
+from .runtime_paths import docs_dir, env_path
 
 
 DEFAULT_SERVICE_PROFILES = [
@@ -61,7 +62,7 @@ DEFAULT_SERVICE_PROFILES = [
     ),
 ]
 
-ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+ENV_PATH = env_path()
 
 
 class GenerateWorker(QThread):
@@ -669,7 +670,7 @@ class FormulaToolWindow(QMainWindow):
         self.statusBar().showMessage("Markdown 预览已刷新")
 
     def show_latex_help(self) -> None:
-        help_path = Path(__file__).resolve().parent.parent / "docs" / "latex_formula_quick_reference.md"
+        help_path = docs_dir() / "latex_formula_quick_reference.md"
         if help_path.exists():
             markdown = help_path.read_text(encoding="utf-8")
         else:
