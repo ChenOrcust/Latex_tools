@@ -369,7 +369,7 @@ class FormulaToolWindow(QMainWindow):
         layout.addWidget(self.help_button)
 
         hint = QLabel(
-            "提示：单个公式模式输出公式主体；段落识别模式输出 Markdown 文本，公式统一用单个 $...$ 包裹。"
+            "提示：单个公式模式输出公式主体；段落识别模式输出 Markdown 文本，行内公式用 $...$，行间公式用 $$...$$。"
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #56606b;")

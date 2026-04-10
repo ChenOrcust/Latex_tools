@@ -139,9 +139,9 @@ class UniversalLLMBackend(FormulaBackend):
             mode_instructions = """
 识别模式：段落识别。
 请输出 markdown 正文内容。
-如果正文中出现公式，不论是行内还是单独成行，都使用单个 $...$ 包裹。
-如果是单独一行的公式，也必须写成独占一行的 $...$，不要输出裸公式。
-不要使用 $$...$$，不要使用 \\[...\\] 或 \\(...\\)，不要输出代码块。
+行内公式使用单个 $...$ 包裹。
+单独成行的行间公式使用双 $$...$$ 包裹，并独占一行。
+不要输出裸公式，不要使用 \\[...\\] 或 \\(...\\)，不要输出代码块。
 JSON 字段必须包含 content、notes。
 """.strip()
         else:
@@ -186,16 +186,18 @@ JSON 字段必须包含 content、notes。
         if not content:
             return content
 
-        # Unify common math wrappers to single-dollar form for paragraph mode.
+        # Normalize paragraph-mode math wrappers:
+        # inline math -> $...$
+        # display math / stand-alone formula lines -> $$...$$
         content = re.sub(
             r"\$\$(.*?)\$\$",
-            lambda match: f"${normalize_latex(match.group(0))}$",
+            lambda match: f"$${match.group(1).strip()}$$",
             content,
             flags=re.S,
         )
         content = re.sub(
             r"\\\[(.*?)\\\]",
-            lambda match: f"${match.group(1).strip()}$",
+            lambda match: f"$${match.group(1).strip()}$$",
             content,
             flags=re.S,
         )
@@ -209,8 +211,10 @@ JSON 字段必须包含 content、notes。
         lines: list[str] = []
         for line in content.splitlines():
             stripped = line.strip()
-            if cls._looks_like_bare_math_line(stripped):
-                lines.append(f"${normalize_latex(stripped)}$")
+            if re.fullmatch(r"\$[^$].*[^$]\$", stripped, re.S):
+                lines.append(f"$${stripped[1:-1].strip()}$$")
+            elif cls._looks_like_bare_math_line(stripped):
+                lines.append(f"$${normalize_latex(stripped)}$$")
             else:
                 lines.append(line)
         return "\n".join(lines).strip()
