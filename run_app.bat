@@ -1,56 +1,109 @@
 @echo off
-setlocal
+setlocal EnableExtensions
 
-set "ENV_NAME=pyqt6"
 cd /d "%~dp0"
+set "PROJECT_DIR=%CD%"
+set "VENV_DIR=%PROJECT_DIR%\.venv"
+set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 
-echo [LatexFormulaTool] Project dir: %CD%
-echo [LatexFormulaTool] Activating conda env: %ENV_NAME%
 
-set "CONDA_BAT="
-if exist "%USERPROFILE%\anaconda3\condabin\conda.bat" set "CONDA_BAT=%USERPROFILE%\anaconda3\condabin\conda.bat"
-if exist "%USERPROFILE%\miniconda3\condabin\conda.bat" set "CONDA_BAT=%USERPROFILE%\miniconda3\condabin\conda.bat"
-if exist "D:\anaconda3\condabin\conda.bat" set "CONDA_BAT=D:\anaconda3\condabin\conda.bat"
-if exist "D:\miniconda3\condabin\conda.bat" set "CONDA_BAT=D:\miniconda3\condabin\conda.bat"
+echo [LatexFormulaTool] Project dir: %PROJECT_DIR%
 
-if defined CONDA_BAT (
-    call "%CONDA_BAT%" activate "%ENV_NAME%"
-) else (
-    call conda activate "%ENV_NAME%"
+if not exist "%VENV_PYTHON%" (
+    echo [LatexFormulaTool] .venv not found, preparing runtime...
+    call :find_bootstrap_python
+    if errorlevel 1 goto python_missing
+
+    echo [LatexFormulaTool] Creating virtual environment: %VENV_DIR%
+    "%BOOTSTRAP_PYTHON_EXE%" %BOOTSTRAP_PYTHON_ARGS% -m venv "%VENV_DIR%"
+    if errorlevel 1 goto venv_failed
 )
 
-if errorlevel 1 goto conda_failed
-
-echo [LatexFormulaTool] Python:
-python --version
+echo [LatexFormulaTool] Python in use:
+"%VENV_PYTHON%" --version
+if errorlevel 1 goto venv_broken
 
 echo.
 echo [LatexFormulaTool] Checking dependencies...
-python scripts\check_environment.py
-if errorlevel 1 goto deps_failed
+"%VENV_PYTHON%" scripts\check_environment.py >nul 2>&1
+if errorlevel 1 (
+    echo [LatexFormulaTool] Missing dependencies detected, installing requirements...
+    "%VENV_PYTHON%" -m pip install --upgrade pip
+    if errorlevel 1 goto pip_failed
+
+    "%VENV_PYTHON%" -m pip install -r requirements.txt
+    if errorlevel 1 goto deps_install_failed
+
+    echo [LatexFormulaTool] Re-checking dependencies...
+    "%VENV_PYTHON%" scripts\check_environment.py
+    if errorlevel 1 goto deps_failed
+) else (
+    "%VENV_PYTHON%" scripts\check_environment.py
+)
 
 echo.
 echo [LatexFormulaTool] Starting app...
-python -m latex_formula_tool
+"%VENV_PYTHON%" -m latex_formula_tool
 if errorlevel 1 goto app_failed
 
 goto done
 
-:conda_failed
+:find_bootstrap_python
+set "BOOTSTRAP_PYTHON_EXE="
+set "BOOTSTRAP_PYTHON_ARGS="
+where py >nul 2>&1
+if not errorlevel 1 (
+    py -3 -c "import sys" >nul 2>&1
+    if not errorlevel 1 (
+        set "BOOTSTRAP_PYTHON_EXE=py"
+        set "BOOTSTRAP_PYTHON_ARGS=-3"
+    )
+)
+
+if not defined BOOTSTRAP_PYTHON_EXE (
+    where python >nul 2>&1
+    if not errorlevel 1 set "BOOTSTRAP_PYTHON_EXE=python"
+)
+
+if not defined BOOTSTRAP_PYTHON_EXE exit /b 1
+exit /b 0
+
+:python_missing
 echo.
-echo [ERROR] Failed to activate conda env "%ENV_NAME%".
-echo Run this command to check the env name:
-echo   conda env list
+echo [ERROR] No usable Python found.
+echo Install Python 3.10+ first, then rerun this script.
+pause
+exit /b 1
+
+:venv_failed
+echo.
+echo [ERROR] Failed to create .venv.
+pause
+exit /b 1
+
+:venv_broken
+echo.
+echo [ERROR] .venv exists but is not usable.
+echo Delete "%VENV_DIR%" and rerun this script.
+pause
+exit /b 1
+
+:pip_failed
+echo.
+echo [ERROR] Failed to upgrade pip in .venv.
+pause
+exit /b 1
+
+:deps_install_failed
+echo.
+echo [ERROR] Failed to install dependencies from requirements.txt.
 pause
 exit /b 1
 
 :deps_failed
 echo.
-echo [ERROR] Dependency check failed.
-echo Install dependencies in the pyqt6 env:
-echo   conda activate pyqt6
-echo   cd /d "%~dp0"
-echo   pip install -r requirements.txt
+echo [ERROR] Dependency check still failed after auto install.
+echo Please inspect the log above.
 pause
 exit /b 1
 
@@ -62,4 +115,3 @@ exit /b 1
 
 :done
 endlocal
-
