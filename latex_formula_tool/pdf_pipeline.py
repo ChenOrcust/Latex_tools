@@ -108,6 +108,42 @@ def export_markdown_to_docx(markdown_path: Path, docx_path: Path) -> None:
         )
 
 
+def convert_markdown_to_html(markdown_text: str) -> str:
+    pandoc_executable = find_pandoc_executable()
+    if pandoc_executable is None:
+        raise RuntimeError(
+            "未找到 Pandoc。\n"
+            f"请先运行启动脚本自动安装，或确认 {bundled_pandoc_dir()}\\pandoc.exe 存在。"
+        )
+
+    command = [
+        str(pandoc_executable),
+        "--from",
+        "markdown+tex_math_dollars",
+        "--to",
+        "html5",
+        "--mathml",
+    ]
+    completed = subprocess.run(
+        command,
+        input=markdown_text,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "Pandoc 转 HTML 失败。"
+            + (f"\n{completed.stderr.strip()}" if completed.stderr.strip() else "")
+        )
+
+    return (
+        '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>'
+        f"{completed.stdout}"
+        "</body></html>"
+    )
+
+
 def find_pandoc_executable() -> Path | None:
     candidates = [
         bundled_pandoc_dir() / "pandoc.exe",

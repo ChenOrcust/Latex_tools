@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 from pathlib import Path
 
-from PyQt6.QtCore import QSettings, Qt, QThread, QUrl, pyqtSignal
+from PyQt6.QtCore import QMimeData, QSettings, Qt, QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QImageReader, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import (
@@ -44,7 +45,7 @@ from .capture import capture_screen_region
 from .env_profile_store import EnvProfileStore
 from .image_utils import save_qimage_to_temp, save_qpixmap_to_temp
 from .markdown_renderer import build_markdown_html, wrap_formula_as_markdown
-from .pdf_pipeline import extract_pdf_pages_to_markdown, export_markdown_to_docx
+from .pdf_pipeline import convert_markdown_to_html, extract_pdf_pages_to_markdown, export_markdown_to_docx
 from .runtime_paths import docs_dir, env_path, outputs_dir
 
 
@@ -390,8 +391,10 @@ class FormulaToolWindow(QMainWindow):
         export_bar = QHBoxLayout()
         self.export_md_button = QPushButton("导出 Markdown")
         self.export_docx_button = QPushButton("Pandoc 转 Word")
+        self.copy_word_button = QPushButton("复制到 Word")
         export_bar.addWidget(self.export_md_button)
         export_bar.addWidget(self.export_docx_button)
+        export_bar.addWidget(self.copy_word_button)
         export_bar.addStretch(1)
         layout.addLayout(export_bar)
 
@@ -437,6 +440,7 @@ class FormulaToolWindow(QMainWindow):
         self.generate_button.clicked.connect(self.generate_formula)
         self.export_md_button.clicked.connect(self.export_markdown)
         self.export_docx_button.clicked.connect(self.export_docx)
+        self.copy_word_button.clicked.connect(self.copy_for_word)
         self.service_config_button.clicked.connect(self.show_service_config)
         self.help_button.clicked.connect(self.show_latex_help)
         self.preview_label.image_dropped.connect(self.load_image)
@@ -651,6 +655,7 @@ class FormulaToolWindow(QMainWindow):
 
     def _on_generated(self, result: FormulaResult) -> None:
         self._last_result_mode = result.recognition_mode
+        self._last_markdown_path = None
         self.result_edit.setPlainText(result.content)
         self.render_markdown_preview()
         raw = result.raw_output
@@ -702,7 +707,7 @@ class FormulaToolWindow(QMainWindow):
         self.statusBar().showMessage("已复制到剪贴板")
 
     def export_markdown(self) -> None:
-        content = self.result_edit.toPlainText().strip()
+        content = self._current_markdown_text()
         if not content:
             self._show_warning("当前没有可导出的 Markdown 内容。")
             return
@@ -722,12 +727,16 @@ class FormulaToolWindow(QMainWindow):
         self.statusBar().showMessage(f"Markdown 已导出：{target.name}")
 
     def export_docx(self) -> None:
-        if self._last_markdown_path is None or not self._last_markdown_path.exists():
-            self.export_markdown()
-            if self._last_markdown_path is None or not self._last_markdown_path.exists():
-                return
+        content = self._current_markdown_text()
+        if not content:
+            self._show_warning("当前没有可导出的 Word 内容。")
+            return
 
-        default_docx = self._last_markdown_path.with_suffix(".docx")
+        default_docx = (
+            self._last_markdown_path.with_suffix(".docx")
+            if self._last_markdown_path is not None
+            else outputs_dir() / "result.docx"
+        )
         path_text, _ = QFileDialog.getSaveFileName(
             self,
             "导出 Word",
@@ -738,21 +747,41 @@ class FormulaToolWindow(QMainWindow):
             return
 
         try:
-            export_markdown_to_docx(self._last_markdown_path, Path(path_text))
+            with tempfile.TemporaryDirectory(prefix="latex_tool_docx_") as temp_dir:
+                markdown_path = Path(temp_dir) / "current_result.md"
+                markdown_path.write_text(content, encoding="utf-8")
+                export_markdown_to_docx(markdown_path, Path(path_text))
         except Exception as exc:
             self._show_warning(str(exc))
             return
         self.statusBar().showMessage(f"Word 已导出：{Path(path_text).name}")
 
+    def copy_for_word(self) -> None:
+        content = self._current_markdown_text()
+        if not content:
+            self._show_warning("当前没有可复制的内容。")
+            return
+
+        try:
+            html = convert_markdown_to_html(content)
+        except Exception as exc:
+            self._show_warning(str(exc))
+            return
+
+        mime = QMimeData()
+        mime.setHtml(html)
+        mime.setText(content)
+        QApplication.clipboard().setMimeData(mime)
+        self.statusBar().showMessage("已复制为 Word 可粘贴格式")
+
     def render_markdown_preview(self) -> None:
-        content = self.result_edit.toPlainText().strip()
+        content = self._current_markdown_text()
         if not content:
             self.markdown_view.setHtml("<html><body><p>生成结果后会在这里显示 Markdown 预览。</p></body></html>")
             return
 
-        markdown_text = content if self._last_result_mode == "paragraph" else wrap_formula_as_markdown(content)
         try:
-            html = build_markdown_html(markdown_text)
+            html = build_markdown_html(content)
         except Exception as exc:
             self.markdown_view.setHtml(f"<html><body><p>预览渲染失败：{str(exc)}</p></body></html>")
             self.statusBar().showMessage("Markdown 预览渲染失败")
@@ -760,6 +789,14 @@ class FormulaToolWindow(QMainWindow):
 
         self.markdown_view.setHtml(html)
         self.statusBar().showMessage("Markdown 预览已刷新")
+
+    def _current_markdown_text(self) -> str:
+        content = self.result_edit.toPlainText().strip()
+        if not content:
+            return ""
+        if self._last_result_mode == "paragraph":
+            return content
+        return wrap_formula_as_markdown(content)
 
     def show_latex_help(self) -> None:
         help_path = docs_dir() / "latex_formula_quick_reference.md"
