@@ -11,6 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from latex_formula_tool.env_profile_store import EnvProfileStore
+from latex_formula_tool.pdf_pipeline import find_pandoc_executable
 
 
 REQUIRED_PACKAGES = [
@@ -20,6 +21,7 @@ REQUIRED_PACKAGES = [
     ("openai", "openai"),
     ("python-dotenv", "dotenv"),
     ("markdown", "markdown"),
+    ("PyMuPDF", "fitz"),
 ]
 
 
@@ -45,6 +47,10 @@ def main() -> int:
             ok = False
             status = f"FAIL ({exc})"
         print(f"{package_name:14} {version:12} {status}")
+
+    pandoc_path = find_pandoc_executable()
+    pandoc_status = str(pandoc_path) if pandoc_path else "not installed"
+    print(f"{'pandoc':14} {pandoc_status:12} {'OK' if pandoc_path else 'WARN'}")
 
     print()
     env_store = EnvProfileStore(PROJECT_ROOT / ".env")

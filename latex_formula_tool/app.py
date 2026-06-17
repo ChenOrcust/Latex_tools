@@ -44,7 +44,8 @@ from .capture import capture_screen_region
 from .env_profile_store import EnvProfileStore
 from .image_utils import save_qimage_to_temp, save_qpixmap_to_temp
 from .markdown_renderer import build_markdown_html, wrap_formula_as_markdown
-from .runtime_paths import docs_dir, env_path
+from .pdf_pipeline import extract_pdf_pages_to_markdown, export_markdown_to_docx
+from .runtime_paths import docs_dir, env_path, outputs_dir
 
 
 DEFAULT_SERVICE_PROFILES = [
@@ -85,7 +86,7 @@ class DropImageLabel(QLabel):
     image_dropped = pyqtSignal(str)
 
     def __init__(self) -> None:
-        super().__init__("粘贴截图、拖入图片，或点击按钮选择图片")
+        super().__init__("粘贴截图、拖入图片，或点击按钮选择图片/PDF")
         self.setAcceptDrops(True)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumHeight(260)
@@ -134,7 +135,6 @@ class ServiceConfigDialog(QDialog):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-
         selector = QHBoxLayout()
         self.profile_combo = QComboBox()
         self.new_button = QPushButton("新建")
@@ -152,7 +152,6 @@ class ServiceConfigDialog(QDialog):
         self.model_edit = QLineEdit()
         self.notes_edit = QTextEdit()
         self.notes_edit.setMinimumHeight(120)
-
         form.addRow("档案名称", self.name_edit)
         form.addRow("API Key", self.api_key_edit)
         form.addRow("Base URL", self.base_url_edit)
@@ -160,9 +159,7 @@ class ServiceConfigDialog(QDialog):
         form.addRow("备注", self.notes_edit)
         layout.addLayout(form)
 
-        hint = QLabel(
-            "这里只保存 OpenAI 兼容接口需要的三项核心参数：Base URL、API Key、模型名。"
-        )
+        hint = QLabel("仅保存 OpenAI 兼容接口所需参数：Base URL、API Key、模型名。")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #56606b;")
         layout.addWidget(hint)
@@ -197,7 +194,6 @@ class ServiceConfigDialog(QDialog):
         if not self._profiles:
             self._profiles = [ServiceConfig(**profile.__dict__) for profile in DEFAULT_SERVICE_PROFILES]
             self._load_profile_names()
-
         target = self._current_profile_name or self._profiles[0].profile_name
         index = self.profile_combo.findText(target)
         self.profile_combo.setCurrentIndex(index if index >= 0 else 0)
@@ -280,7 +276,7 @@ class ServiceConfigDialog(QDialog):
 class FormulaToolWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("LaTeX 公式生成器")
+        self.setWindowTitle("LaTeX 公式工具")
         self.resize(1180, 760)
 
         self._settings = QSettings()
@@ -290,10 +286,12 @@ class FormulaToolWindow(QMainWindow):
         self._active_profile_name = active_profile_name
         self._suppress_profile_persistence = False
         self._current_image_path: Path | None = None
+        self._current_pdf_path: Path | None = None
         self._current_pixmap: QPixmap | None = None
         self._worker: GenerateWorker | None = None
         self._awaiting_native_snip = False
         self._last_result_mode = "formula"
+        self._last_markdown_path: Path | None = None
 
         self._build_ui()
         self._restore_settings()
@@ -312,7 +310,6 @@ class FormulaToolWindow(QMainWindow):
         self.setCentralWidget(root)
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("准备就绪")
-
         self._apply_app_styles()
 
     def _build_input_panel(self) -> QWidget:
@@ -326,19 +323,19 @@ class FormulaToolWindow(QMainWindow):
         self.paste_button = QPushButton("粘贴截图/图片")
         self.capture_button = QPushButton("截取屏幕区域")
         self.open_button = QPushButton("打开图片")
-        self.clear_image_button = QPushButton("清空图片")
+        self.open_pdf_button = QPushButton("打开 PDF")
+        self.clear_image_button = QPushButton("清空内容")
         image_buttons.addWidget(self.paste_button, 0, 0)
         image_buttons.addWidget(self.capture_button, 0, 1)
         image_buttons.addWidget(self.open_button, 1, 0)
         image_buttons.addWidget(self.clear_image_button, 1, 1)
+        image_buttons.addWidget(self.open_pdf_button, 2, 0, 1, 2)
         layout.addLayout(image_buttons)
 
         desc_group = QGroupBox("文字描述 / 补充说明")
         desc_layout = QVBoxLayout(desc_group)
         self.description_edit = QTextEdit()
-        self.description_edit.setPlaceholderText(
-            "例如：把图片里的分段函数转成 LaTeX；或直接输入“x 从 0 到无穷的 e 的负 x 平方积分”。"
-        )
+        self.description_edit.setPlaceholderText("例如：把图片里的分段函数转成 LaTeX；或直接输入数学描述。")
         self.description_edit.setMinimumHeight(110)
         desc_layout.addWidget(self.description_edit)
         layout.addWidget(desc_group)
@@ -349,6 +346,7 @@ class FormulaToolWindow(QMainWindow):
         self.recognition_mode_combo = QComboBox()
         self.recognition_mode_combo.addItem("单个公式模式", "formula")
         self.recognition_mode_combo.addItem("段落识别模式", "paragraph")
+        self.recognition_mode_combo.addItem("PDF 文档模式", "pdf")
         self.profile_summary_label = QLabel("")
         self.profile_summary_label.setWordWrap(True)
         self.profile_summary_label.setStyleSheet("color: #56606b;")
@@ -357,7 +355,7 @@ class FormulaToolWindow(QMainWindow):
         settings_layout.addRow("当前配置", self.profile_summary_label)
         layout.addWidget(settings_group)
 
-        self.generate_button = QPushButton("生成公式代码")
+        self.generate_button = QPushButton("生成内容")
         self.generate_button.setObjectName("primaryButton")
         self.generate_button.setMinimumHeight(42)
         layout.addWidget(self.generate_button)
@@ -365,12 +363,10 @@ class FormulaToolWindow(QMainWindow):
         self.service_config_button = QPushButton("模型服务配置")
         layout.addWidget(self.service_config_button)
 
-        self.help_button = QPushButton("LaTeX 速查帮助")
+        self.help_button = QPushButton("LaTeX 快速帮助")
         layout.addWidget(self.help_button)
 
-        hint = QLabel(
-            "提示：单个公式模式输出公式主体；段落识别模式输出 Markdown 文本，行内公式用 $...$，行间公式用 $$...$$。"
-        )
+        hint = QLabel("PDF 模式会逐页提取为 Markdown，再可用 Pandoc 导出 Word。")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #56606b;")
         layout.addWidget(hint)
@@ -383,14 +379,22 @@ class FormulaToolWindow(QMainWindow):
         self.result_edit = QTextEdit()
         self.markdown_view = QWebEngineView()
         self.raw_edit = QTextEdit()
-
-        self.result_edit.setPlaceholderText("识别结果（单个公式模式下为 LaTeX；段落识别模式下为 Markdown）")
+        self.result_edit.setPlaceholderText("识别结果")
         self.markdown_view.setMinimumHeight(240)
         self.raw_edit.setPlaceholderText("模型原始响应 / 调试信息")
         self.raw_edit.setMinimumHeight(90)
 
         layout.addWidget(self._with_copy_button("识别结果", self.result_edit), stretch=2)
         layout.addWidget(self._build_render_panel(), stretch=3)
+
+        export_bar = QHBoxLayout()
+        self.export_md_button = QPushButton("导出 Markdown")
+        self.export_docx_button = QPushButton("Pandoc 转 Word")
+        export_bar.addWidget(self.export_md_button)
+        export_bar.addWidget(self.export_docx_button)
+        export_bar.addStretch(1)
+        layout.addLayout(export_bar)
+
         layout.addWidget(self._with_copy_button("原始响应", self.raw_edit), stretch=1)
         return panel
 
@@ -398,15 +402,13 @@ class FormulaToolWindow(QMainWindow):
         wrapper = QWidget()
         layout = QVBoxLayout(wrapper)
         layout.setContentsMargins(0, 0, 0, 0)
-
         bar = QHBoxLayout()
-        label = QLabel("Markdown 渲染预览")
+        label = QLabel("Markdown 预览")
         refresh_button = QPushButton("刷新预览")
         refresh_button.clicked.connect(self.render_markdown_preview)
         bar.addWidget(label)
         bar.addStretch(1)
         bar.addWidget(refresh_button)
-
         layout.addLayout(bar)
         layout.addWidget(self.markdown_view)
         return wrapper
@@ -415,7 +417,6 @@ class FormulaToolWindow(QMainWindow):
         wrapper = QWidget()
         layout = QVBoxLayout(wrapper)
         layout.setContentsMargins(0, 0, 0, 0)
-
         bar = QHBoxLayout()
         label = QLabel(title)
         copy_button = QPushButton("复制")
@@ -423,7 +424,6 @@ class FormulaToolWindow(QMainWindow):
         bar.addWidget(label)
         bar.addStretch(1)
         bar.addWidget(copy_button)
-
         layout.addLayout(bar)
         layout.addWidget(editor)
         return wrapper
@@ -432,14 +432,16 @@ class FormulaToolWindow(QMainWindow):
         self.paste_button.clicked.connect(self.paste_image)
         self.capture_button.clicked.connect(self.capture_region)
         self.open_button.clicked.connect(self.open_image)
+        self.open_pdf_button.clicked.connect(self.open_pdf)
         self.clear_image_button.clicked.connect(self.clear_image)
         self.generate_button.clicked.connect(self.generate_formula)
+        self.export_md_button.clicked.connect(self.export_markdown)
+        self.export_docx_button.clicked.connect(self.export_docx)
         self.service_config_button.clicked.connect(self.show_service_config)
         self.help_button.clicked.connect(self.show_latex_help)
         self.preview_label.image_dropped.connect(self.load_image)
         self.service_profile_combo.currentTextChanged.connect(self._on_service_profile_changed)
         QApplication.clipboard().dataChanged.connect(self._on_clipboard_changed)
-
         QShortcut(QKeySequence.StandardKey.Paste, self, activated=self.paste_image)
         QShortcut(QKeySequence("Ctrl+Return"), self, activated=self.generate_formula)
 
@@ -514,7 +516,7 @@ class FormulaToolWindow(QMainWindow):
 
     def _start_native_windows_snip(self) -> None:
         self._awaiting_native_snip = True
-        self.statusBar().showMessage("请框选需要识别的公式区域，截图完成后会自动载入")
+        self.statusBar().showMessage("请框选需要识别的区域，完成后会自动载入")
         opened = QDesktopServices.openUrl(QUrl("ms-screenclip:"))
         if not opened:
             self._awaiting_native_snip = False
@@ -537,9 +539,22 @@ class FormulaToolWindow(QMainWindow):
 
     def open_image(self) -> None:
         filters = "Images (*.png *.jpg *.jpeg *.bmp *.webp);;All Files (*)"
-        path, _ = QFileDialog.getOpenFileName(self, "选择公式图片", "", filters)
+        path, _ = QFileDialog.getOpenFileName(self, "选择图片", "", filters)
         if path:
             self.load_image(path)
+
+    def open_pdf(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "选择 PDF 文件", "", "PDF Files (*.pdf)")
+        if not path:
+            return
+        self._current_pdf_path = Path(path)
+        self._current_image_path = None
+        self._current_pixmap = None
+        self.preview_label.setPixmap(QPixmap())
+        self.preview_label.setText(f"已选择 PDF:\n{self._current_pdf_path.name}")
+        index = self.recognition_mode_combo.findData("pdf")
+        self.recognition_mode_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.statusBar().showMessage(f"已加载 PDF: {self._current_pdf_path.name}")
 
     def load_image(self, path_text: str) -> None:
         path = Path(path_text)
@@ -552,18 +567,26 @@ class FormulaToolWindow(QMainWindow):
         if image.isNull():
             self._show_warning(f"无法读取图片：{path}")
             return
+        self._current_pdf_path = None
         self._set_image(path, QPixmap.fromImage(image))
         self.statusBar().showMessage(f"已载入图片：{path.name}")
 
     def clear_image(self) -> None:
         self._current_image_path = None
+        self._current_pdf_path = None
         self._current_pixmap = None
+        self._last_markdown_path = None
         self.preview_label.setPixmap(QPixmap())
-        self.preview_label.setText("粘贴截图、拖入图片，或点击按钮选择图片")
-        self.statusBar().showMessage("已清空图片")
+        self.preview_label.setText("粘贴截图、拖入图片，或点击按钮选择图片/PDF")
+        self.statusBar().showMessage("已清空内容")
 
     def generate_formula(self) -> None:
         if self._worker is not None and self._worker.isRunning():
+            return
+
+        selected_mode = str(self.recognition_mode_combo.currentData())
+        if selected_mode == "pdf":
+            self._generate_pdf_markdown()
             return
 
         text_hint = self.description_edit.toPlainText().strip()
@@ -579,10 +602,9 @@ class FormulaToolWindow(QMainWindow):
         request = FormulaRequest(
             image_path=self._current_image_path,
             text_hint=text_hint,
-            recognition_mode=str(self.recognition_mode_combo.currentData()),
+            recognition_mode=selected_mode,  # type: ignore[arg-type]
             service_config=service_config,
         )
-
         self.generate_button.setEnabled(False)
         self.generate_button.setText("生成中...")
         self.statusBar().showMessage(f"正在调用：{service_config.profile_name}")
@@ -593,6 +615,39 @@ class FormulaToolWindow(QMainWindow):
         self._worker.failed.connect(self._on_generate_failed)
         self._worker.finished.connect(self._on_worker_finished)
         self._worker.start()
+
+    def _generate_pdf_markdown(self) -> None:
+        if self._current_pdf_path is None:
+            self._show_warning("请先选择 PDF 文件。")
+            return
+        service_config = self._current_service_config()
+        if service_config is None:
+            self._show_warning("请先选择一个服务档案。")
+            return
+
+        output_dir = outputs_dir() / self._current_pdf_path.stem
+        self.generate_button.setEnabled(False)
+        self.generate_button.setText("处理中...")
+        self.statusBar().showMessage(f"正在提取 PDF: {self._current_pdf_path.name}")
+        self.raw_edit.setPlainText("")
+        try:
+            result = extract_pdf_pages_to_markdown(
+                self._current_pdf_path,
+                service_config,
+                output_dir=output_dir,
+            )
+        except Exception as exc:
+            self._show_warning(str(exc))
+            self._on_worker_finished()
+            return
+
+        self._last_result_mode = "paragraph"
+        self._last_markdown_path = result.markdown_path
+        self.result_edit.setPlainText(result.markdown_text)
+        self.raw_edit.setPlainText("\n\n==========\n\n".join(item.raw_output for item in result.results))
+        self.render_markdown_preview()
+        self._on_worker_finished()
+        self.statusBar().showMessage(f"PDF 提取完成，共 {result.page_count} 页")
 
     def _on_generated(self, result: FormulaResult) -> None:
         self._last_result_mode = result.recognition_mode
@@ -610,12 +665,13 @@ class FormulaToolWindow(QMainWindow):
 
     def _on_worker_finished(self) -> None:
         self.generate_button.setEnabled(True)
-        self.generate_button.setText("生成公式代码")
+        self.generate_button.setText("生成内容")
         self._worker = None
 
     def _set_image(self, path: Path, pixmap: QPixmap) -> None:
         self._current_image_path = path
         self._current_pixmap = pixmap
+        self._current_pdf_path = None
         self._update_preview()
 
     def _update_preview(self) -> None:
@@ -642,9 +698,51 @@ class FormulaToolWindow(QMainWindow):
         self._refresh_service_profile_combo(dialog.get_current_profile_name())
 
     def _copy_text(self, editor: QTextEdit) -> None:
-        text = editor.toPlainText()
-        QApplication.clipboard().setText(text)
+        QApplication.clipboard().setText(editor.toPlainText())
         self.statusBar().showMessage("已复制到剪贴板")
+
+    def export_markdown(self) -> None:
+        content = self.result_edit.toPlainText().strip()
+        if not content:
+            self._show_warning("当前没有可导出的 Markdown 内容。")
+            return
+
+        default_path = self._last_markdown_path or (outputs_dir() / "result.md")
+        path_text, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出 Markdown",
+            str(default_path),
+            "Markdown Files (*.md)",
+        )
+        if not path_text:
+            return
+        target = Path(path_text)
+        target.write_text(content, encoding="utf-8")
+        self._last_markdown_path = target
+        self.statusBar().showMessage(f"Markdown 已导出：{target.name}")
+
+    def export_docx(self) -> None:
+        if self._last_markdown_path is None or not self._last_markdown_path.exists():
+            self.export_markdown()
+            if self._last_markdown_path is None or not self._last_markdown_path.exists():
+                return
+
+        default_docx = self._last_markdown_path.with_suffix(".docx")
+        path_text, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出 Word",
+            str(default_docx),
+            "Word Files (*.docx)",
+        )
+        if not path_text:
+            return
+
+        try:
+            export_markdown_to_docx(self._last_markdown_path, Path(path_text))
+        except Exception as exc:
+            self._show_warning(str(exc))
+            return
+        self.statusBar().showMessage(f"Word 已导出：{Path(path_text).name}")
 
     def render_markdown_preview(self) -> None:
         content = self.result_edit.toPlainText().strip()
@@ -652,17 +750,11 @@ class FormulaToolWindow(QMainWindow):
             self.markdown_view.setHtml("<html><body><p>生成结果后会在这里显示 Markdown 预览。</p></body></html>")
             return
 
-        if self._last_result_mode == "paragraph":
-            markdown_text = content
-        else:
-            markdown_text = wrap_formula_as_markdown(content)
-
+        markdown_text = content if self._last_result_mode == "paragraph" else wrap_formula_as_markdown(content)
         try:
             html = build_markdown_html(markdown_text)
         except Exception as exc:
-            self.markdown_view.setHtml(
-                f"<html><body><p>预览渲染失败：{str(exc)}</p></body></html>"
-            )
+            self.markdown_view.setHtml(f"<html><body><p>预览渲染失败：{str(exc)}</p></body></html>")
             self.statusBar().showMessage("Markdown 预览渲染失败")
             return
 
@@ -671,21 +763,15 @@ class FormulaToolWindow(QMainWindow):
 
     def show_latex_help(self) -> None:
         help_path = docs_dir() / "latex_formula_quick_reference.md"
-        if help_path.exists():
-            markdown = help_path.read_text(encoding="utf-8")
-        else:
-            markdown = "# LaTeX 公式代码速查\n\n帮助文件不存在。"
-
+        markdown = help_path.read_text(encoding="utf-8") if help_path.exists() else "# LaTeX 快速参考\n\n帮助文件不存在。"
         dialog = QDialog(self)
-        dialog.setWindowTitle("LaTeX 公式代码速查")
+        dialog.setWindowTitle("LaTeX 快速参考")
         dialog.resize(820, 680)
         layout = QVBoxLayout(dialog)
-
         browser = QTextBrowser()
         browser.setOpenExternalLinks(True)
         browser.setMarkdown(markdown)
         layout.addWidget(browser)
-
         close_button = QPushButton("关闭")
         close_button.clicked.connect(dialog.accept)
         layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
@@ -753,12 +839,10 @@ class FormulaToolWindow(QMainWindow):
         if not profiles:
             return [], ""
 
-        active_name = str(
-            self._settings.value("service_profiles/current_name", profiles[0].profile_name)
-        ).strip() or profiles[0].profile_name
+        active_name = str(self._settings.value("service_profiles/current_name", profiles[0].profile_name)).strip()
         self._settings.remove("service_profiles/json")
         self._settings.remove("service_profiles/current_name")
-        return profiles, active_name
+        return profiles, active_name or profiles[0].profile_name
 
     def _refresh_service_profile_combo(self, target_name: str = "") -> None:
         self._suppress_profile_persistence = True
@@ -789,10 +873,7 @@ class FormulaToolWindow(QMainWindow):
         if config is None:
             self.profile_summary_label.setText("未选择服务档案")
             return
-        summary = (
-            f"Base URL: {config.base_url or '(未填写)'}\n"
-            f"Model: {config.model or '(未填写)'}"
-        )
+        summary = f"Base URL: {config.base_url or '(未填写)'}\nModel: {config.model or '(未填写)'}"
         self.profile_summary_label.setText(summary)
         if not self._suppress_profile_persistence:
             self._save_service_profiles()
@@ -800,18 +881,9 @@ class FormulaToolWindow(QMainWindow):
     def _apply_app_styles(self) -> None:
         self.setStyleSheet(
             """
-            QWidget {
-                font-size: 14px;
-            }
-            QGroupBox {
-                font-weight: 600;
-                margin-top: 12px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 8px;
-                padding: 0 4px;
-            }
+            QWidget { font-size: 14px; }
+            QGroupBox { font-weight: 600; margin-top: 12px; }
+            QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }
             QTextEdit, QLineEdit, QComboBox {
                 border: 1px solid #c7cdd4;
                 border-radius: 6px;
@@ -824,21 +896,14 @@ class FormulaToolWindow(QMainWindow):
                 padding: 7px 12px;
                 background: #ffffff;
             }
-            QPushButton:hover {
-                background: #eef4ff;
-            }
-            QPushButton:disabled {
-                color: #8b949e;
-                background: #f2f4f7;
-            }
+            QPushButton:hover { background: #eef4ff; }
+            QPushButton:disabled { color: #8b949e; background: #f2f4f7; }
             QPushButton#primaryButton {
                 background: #0f766e;
                 color: #ffffff;
                 border-color: #0f766e;
                 font-weight: 700;
             }
-            QPushButton#primaryButton:hover {
-                background: #115e59;
-            }
+            QPushButton#primaryButton:hover { background: #115e59; }
             """
         )

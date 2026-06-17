@@ -23,6 +23,20 @@ def docs_dir() -> Path:
     return app_root() / "docs"
 
 
+def outputs_dir() -> Path:
+    path = app_root() / "outputs"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def venv_dir() -> Path:
+    return app_root() / ".venv"
+
+
+def bundled_pandoc_dir() -> Path:
+    return venv_dir() / "tools" / "pandoc"
+
+
 def ensure_local_env() -> None:
     target = env_path()
     if target.exists():
