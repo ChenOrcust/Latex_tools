@@ -14,6 +14,8 @@ from .runtime_paths import bundled_pandoc_dir
 
 
 ProgressCallback = Callable[[int, int, str], None]
+PANDOC_MARKDOWN_READER = "markdown+tex_math_dollars+tex_math_single_backslash+raw_tex"
+PANDOC_MARKDOWN_WRITER = "markdown+tex_math_dollars+pipe_tables"
 
 
 @dataclass
@@ -92,20 +94,85 @@ def extract_pdf_pages_to_markdown(
 
 
 def export_markdown_to_docx(markdown_path: Path, docx_path: Path) -> None:
-    pandoc_executable = find_pandoc_executable()
-    if pandoc_executable is None:
-        raise RuntimeError(
-            "未找到 Pandoc。\n"
-            f"请先运行启动脚本自动安装，或确认 {bundled_pandoc_dir()}\\pandoc.exe 存在。"
-        )
+    _run_pandoc(
+        [
+            "--from",
+            PANDOC_MARKDOWN_READER,
+            str(markdown_path),
+            "-o",
+            str(docx_path),
+        ],
+        "Pandoc 转 Word 失败。",
+    )
 
-    command = [str(pandoc_executable), str(markdown_path), "-o", str(docx_path)]
-    completed = subprocess.run(command, capture_output=True, text=True, check=False)
-    if completed.returncode != 0:
-        raise RuntimeError(
-            "Pandoc 转 Word 失败。"
-            + (f"\n{completed.stderr.strip()}" if completed.stderr.strip() else "")
-        )
+
+def convert_docx_to_markdown(docx_path: Path, markdown_path: Path) -> None:
+    media_dir = markdown_path.with_name(f"{markdown_path.stem}_media")
+    _run_pandoc(
+        [
+            "--from",
+            "docx",
+            "--to",
+            PANDOC_MARKDOWN_WRITER,
+            "--wrap=none",
+            "--extract-media",
+            str(media_dir),
+            str(docx_path),
+            "-o",
+            str(markdown_path),
+        ],
+        "Pandoc Word 转 Markdown 失败。",
+    )
+
+
+def convert_docx_to_tex(docx_path: Path, tex_path: Path) -> None:
+    _run_pandoc(
+        [
+            "--from",
+            "docx",
+            "--to",
+            "latex",
+            "--standalone",
+            str(docx_path),
+            "-o",
+            str(tex_path),
+        ],
+        "Pandoc Word 转 TeX 失败。",
+    )
+
+
+def convert_markdown_file_to_docx(markdown_path: Path, docx_path: Path) -> None:
+    export_markdown_to_docx(markdown_path, docx_path)
+
+
+def convert_markdown_file_to_pdf(markdown_path: Path, pdf_path: Path) -> None:
+    _run_pandoc(
+        [
+            "--from",
+            PANDOC_MARKDOWN_READER,
+            str(markdown_path),
+            "-o",
+            str(pdf_path),
+        ],
+        "Pandoc Markdown 转 PDF 失败。",
+    )
+
+
+def convert_markdown_file_to_html(markdown_path: Path, html_path: Path) -> None:
+    _run_pandoc(
+        [
+            "--from",
+            PANDOC_MARKDOWN_READER,
+            "--to",
+            "html5",
+            "--standalone",
+            "--mathml",
+            str(markdown_path),
+            "-o",
+            str(html_path),
+        ],
+        "Pandoc Markdown 转 HTML 失败。",
+    )
 
 
 def convert_markdown_to_html(markdown_text: str) -> str:
@@ -119,9 +186,10 @@ def convert_markdown_to_html(markdown_text: str) -> str:
     command = [
         str(pandoc_executable),
         "--from",
-        "markdown+tex_math_dollars",
+        PANDOC_MARKDOWN_READER,
         "--to",
         "html5",
+        "--standalone",
         "--mathml",
     ]
     completed = subprocess.run(
@@ -129,6 +197,8 @@ def convert_markdown_to_html(markdown_text: str) -> str:
         input=markdown_text,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if completed.returncode != 0:
@@ -136,12 +206,29 @@ def convert_markdown_to_html(markdown_text: str) -> str:
             "Pandoc 转 HTML 失败。"
             + (f"\n{completed.stderr.strip()}" if completed.stderr.strip() else "")
         )
+    return completed.stdout
 
-    return (
-        '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>'
-        f"{completed.stdout}"
-        "</body></html>"
+
+def _run_pandoc(arguments: list[str], error_message: str) -> None:
+    pandoc_executable = find_pandoc_executable()
+    if pandoc_executable is None:
+        raise RuntimeError(
+            "未找到 Pandoc。\n"
+            f"请先运行启动脚本自动安装，或确认 {bundled_pandoc_dir()}\\pandoc.exe 存在。"
+        )
+
+    completed = subprocess.run(
+        [str(pandoc_executable), *arguments],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
     )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            error_message + (f"\n{completed.stderr.strip()}" if completed.stderr.strip() else "")
+        )
 
 
 def find_pandoc_executable() -> Path | None:

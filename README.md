@@ -1,17 +1,25 @@
 # LaTeX Formula Tool
 
-一个桌面工具，用于从图片或 PDF 中提取包含公式的内容，并整理为 Markdown，再可选导出为 Word。
+一个桌面工具，用于识别图片公式、提取 PDF 内容、做 Pandoc 文档转换，并支持导出为 Markdown / Word / PDF / HTML。
 
-## 功能
+## 主要功能
 
 - 图片公式识别
 - 段落识别并输出 Markdown
-- 独立的 `PDF 文档模式`
-- `PDF -> Markdown -> Word(.docx)` 流程
-- MathJax 预览公式
-- 多服务档案管理，兼容 OpenAI 风格接口
+- PDF 按页提取为 Markdown
+- Markdown 导出 Word
+- Markdown 导出 PDF
+- Markdown 导出 HTML
+- Word 转 Markdown
+- Word 转 TeX
+- Markdown 转 Word
+- 顶部多选项卡页面切换
+- 本地输入目录 / 输出目录选择
+- 一键生成带公式的测试样例
 
-## 安装
+## 运行环境
+
+项目统一使用项目内 `.venv`：
 
 ```powershell
 cd E:\Projects\Latex_tools
@@ -20,19 +28,15 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-项目运行环境统一使用项目内的 `.venv`。
+## Pandoc
 
-## 项目内 Pandoc
-
-Word 导出优先使用项目内的 Pandoc，不依赖系统 PATH。
-
-运行 `run_app.bat` 时，会自动下载 Pandoc 到：
+运行 `run_app.bat` 时会自动安装项目内 Pandoc，默认位置：
 
 ```text
 E:\Projects\Latex_tools\.venv\tools\pandoc\pandoc.exe
 ```
 
-如果该位置不存在，程序才会回退到系统里的 `pandoc`。
+Word / PDF / HTML 导出和文档转换会优先使用这个项目内 Pandoc。
 
 ## 模型配置
 
@@ -48,7 +52,7 @@ LLM_PROFILE_1_MODEL="qwen3-vl-plus"
 LLM_PROFILE_1_NOTES=""
 ```
 
-也可以在桌面端界面中直接新增、切换、保存多个服务档案。
+也可以直接在软件界面里新增、切换、保存多个服务档案。
 
 ## 启动
 
@@ -69,16 +73,32 @@ latex-formula-tool
 run_app.bat
 ```
 
-## 模式
+## 页面结构
 
-- `单个公式模式`：输出单条 LaTeX
-- `段落识别模式`：输出 Markdown
-- `PDF 文档模式`：选择 PDF，逐页提取为 Markdown，可再导出为 Word
+顶部有两个页面：
 
-PDF 模式默认输出到 `outputs/<pdf文件名>/`。
+- `识别`
+  通过下拉模式切换：
+  - 单个公式模式
+  - 段落识别模式
+  - PDF 提取模式
+- `文件转换`
+  适合 Word / Markdown / TeX / PDF / HTML 的本地文件转换，并支持输入目录、输出目录选择。
+
+## 文件转换页功能
+
+- Word 转 Markdown
+- Word 转 TeX
+- Markdown 转 Word
+- Markdown 转 PDF
+- Markdown 转 HTML
+- 打开输入目录
+- 打开输出目录
+- 一键生成 `pandoc_formula_demo.md` 测试样例
 
 ## 说明
 
-- PDF 提取当前采用“逐页渲染图片 + 视觉模型识别 + 页面文本辅助提示”的方式，目标是尽量保持公式和符号准确。
-- Markdown 中的公式按 `$...$` 和 `$$...$$` 组织，便于 MathJax 和 Pandoc 处理。
-- 如果项目内 `.venv\tools\pandoc\pandoc.exe` 已存在，Word 导出会优先使用它。
+- PDF 提取采用“逐页渲染图片 + 视觉模型识别 + 页面文本辅助提示”的方式，尽量保持公式和符号准确。
+- 复制到 Word 会同时写入 HTML 和纯文本格式，兼容性比单纯复制 Markdown 更好。
+- PDF 输出默认会放到 `outputs/<pdf文件名>/`，也可以在界面中改成本地任意目录。
+- 文件转换页支持一键生成测试 Markdown，方便验证公式在 Word / PDF / HTML 中的互转效果。
